@@ -14,6 +14,9 @@ import (
 func PermissiveMode() {
 	var universal Cluster
 	var universalOpts = KumaUniversalDeployOpts
+	universalOpts = append(universalOpts,
+		WithEnv("KUMA_XDS_SERVER_DATAPLANE_CONFIGURATION_REFRESH_INTERVAL", "20s"),
+	)
 
 	BeforeEach(func() {
 		clusters, err := NewUniversalClusters([]string{Kuma1}, Silent)
@@ -28,6 +31,20 @@ func PermissiveMode() {
 		Expect(universal.DeleteKuma(universalOpts...)).To(Succeed())
 		Expect(universal.DismissCluster()).To(Succeed())
 	})
+
+	createMeshDisabledMTLS := func(name, mode string) {
+		meshYaml := fmt.Sprintf(
+			`
+type: Mesh
+name: %s
+mtls:
+  enabledBackend: ""
+  backends:
+  - name: ca-1
+    type: builtin
+    mode: %s`, name, mode)
+		Expect(YamlUniversal(meshYaml)(universal)).To(Succeed())
+	}
 
 	createMeshMTLS := func(name, mode string) {
 		meshYaml := fmt.Sprintf(
@@ -61,6 +78,18 @@ mtls:
 		}
 		Expect(TestServerUniversal("test-server", mesh, echoServerToken, WithArgs(args), WithProtocol("tcp"))(universal)).To(Succeed())
 	}
+
+	curlAddr := func(addr string, opts ...string) func() error {
+		return func() error {
+			cmd := []string{"curl", "-v", "-m", "3", "--fail"}
+			cmd = append(cmd, opts...)
+			cmd = append(cmd, addr)
+			_, _, err := universal.Exec("", "", "demo-client", cmd...)
+			return err
+		}
+	}
+
+	insideMeshToServer := curlAddr("test-server.mesh")
 
 	It("should support STRICT mTLS mode", func() {
 		createMeshMTLS("default", "STRICT")
@@ -140,5 +169,30 @@ mtls:
 			_, _, err := universal.Exec("", "", "demo-client", cmd...)
 			return err
 		}, "30s", "1s").ShouldNot(HaveOccurred())
+	})
+
+	FIt("should support PERMISSIVE mTLS mode with no failed requests", func() {
+		createMeshDisabledMTLS("default", "PERMISSIVE")
+
+		runTestServer("default", false)
+
+		runDemoClient("default")
+
+		Eventually(insideMeshToServer, "30s", "1s").ShouldNot(HaveOccurred())
+
+		done := make(chan struct{})
+
+		go func() {
+			defer GinkgoRecover()
+			defer close(done)
+
+			Consistently(insideMeshToServer, "30s", "100ms").Should(Succeed())
+		}()
+
+		createMeshMTLS("default", "PERMISSIVE")
+
+		<-done
+
+		Fail("TEST IS BAD")
 	})
 }
