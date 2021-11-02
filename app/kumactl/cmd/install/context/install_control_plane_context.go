@@ -98,7 +98,29 @@ func DefaultInstallCpContext() InstallCpContext {
 		},
 		NewSelfSignedCert: tls.NewSelfSignedCert,
 		InstallCpTemplateFiles: func(args *InstallControlPlaneArgs) (data.FileList, error) {
-			return data.ReadFiles(deployments.KumaChartFS())
+			baseFiles, err := data.ReadFiles(deployments.KumaChartFS())
+			if err != nil {
+				return nil, err
+			}
+
+			var fl data.FileList
+
+			for _, f := range baseFiles {
+				fl = append(fl, f)
+			}
+
+			for _, files := range deployments.KumaChartAdditionalFS() {
+				additionalFiles, err := data.ReadFiles(files)
+				if err != nil {
+					return nil, err
+				}
+
+				for _, f := range additionalFiles {
+					fl = append(fl, f)
+				}
+			}
+
+			return fl, nil
 		},
 		HELMValuesPrefix: "",
 	}
